@@ -1,28 +1,48 @@
 #include <ESP8266WiFi.h>
-#include <ESP8266mDNS.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266WebServer.h>
+#include <NTPClient.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #include <Adafruit_NeoPixel.h>
 #include <Adafruit_NeoMatrix.h>
 #include <Adafruit_GFX.h>
 #include <TimeLib.h>
-#include <NTPClient.h>
-#include <WiFiUdp.h>
-#include <ESP8266WebServer.h>
 #include <Scheduler.h>
+#include <RemoteDebug.h>
+
+#define OTA_DELAY 1000
+#define WEB_SERVER_DELAY 1000
+#define REMOTE_DEBUG_DELAY 1000
+
+#define SCROLL_DELAY 50
+#define CLOCK_DELAY 1000
 
 #define DISPLAY_WIDTH 32
 #define DISPLAY_HEIGHT 8 
 #define LED_PIN 2
 
-#define DEFAULT_BRIGHTNESS 2
-#define DEFAULT_ANIMATION_SPEED 18.0
+#define BRIGHTNESS 2
+#define SCROLL_SPEED 18.0
+
+#define MAX_MESSAGES 3
+#define MESSAGE_DELAY 10000
+#define MESSAGE_PADDING 5
+
+struct Message {
+  String label;
+  String text;
+  uint16_t color;
+  bool enabled;
+};
 
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASS;
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", 3600);
+
+RemoteDebug Debug;
 
 ESP8266WebServer server(80);
 
@@ -31,18 +51,23 @@ Adafruit_NeoMatrix matrix = Adafruit_NeoMatrix(DISPLAY_WIDTH, DISPLAY_HEIGHT, LE
   NEO_MATRIX_COLUMNS + NEO_MATRIX_ZIGZAG,
   NEO_GRB            + NEO_KHZ800);
 
-int displayColor[3] = { 74, 171, 255 };
-int displayBrightness = DEFAULT_BRIGHTNESS;
+uint16_t displayColor = matrix.Color(74, 171, 255);
+int displayBrightness = BRIGHTNESS;
 
-int alertColor[3] = { 255, 101, 74 };
+uint16_t alertColor = matrix.Color(255, 101, 74);
 
 String alert;
-long alertExiration = 0;
+unsigned long alertTimeout = 0;
 
-long startTime = -1;
-long deltaTime = 0;
-float animationPosition = 0;
-float animationSpeed = DEFAULT_ANIMATION_SPEED;
+Message messages[MAX_MESSAGES];
+unsigned long nextMessage = 0;
+bool messageMode = false;
+
+unsigned long startTime = -1;
+unsigned long deltaTime = 0;
+
+float scrollPosition = 0;
+float scrollSpeed = SCROLL_SPEED;
 
 char charBuffer[256];
 
@@ -76,7 +101,7 @@ class OtaTask : public Task {
 protected:
     void loop() {
       ArduinoOTA.handle();
-      delay(500);
+      delay(OTA_DELAY);
     }
 } ota_task;
 
@@ -126,6 +151,20 @@ void setupOta() {
   Scheduler.start(&ota_task);
 }
 
+class RemoteDebugTask : public Task {
+protected:
+    void loop() {
+      Debug.handle();
+      delay(REMOTE_DEBUG_DELAY);
+    }
+} remote_debug_task;
+
+void setupRemoteDebug() {  
+  Debug.begin(OTA_HOSTNAME);
+  Debug.setResetCmdEnabled(true);
+  Scheduler.start(&remote_debug_task);
+}
+
 void handleGetSetBrightness() {
   if(server.hasArg("value")) {
     displayBrightness = server.arg("value").toInt();
@@ -135,18 +174,18 @@ void handleGetSetBrightness() {
 
 void handleGetSetSpeed() {
   if(server.hasArg("value")) {
-    animationSpeed = (float)server.arg("value").toInt();
+    scrollSpeed = (float)server.arg("value").toInt();
   }
-  server.send(200, "text/plain", String(animationSpeed));
+  server.send(200, "text/plain", String(scrollSpeed));
 }
 
 void handleSetAlert() {
   if(server.hasArg("text")) {
     alert = server.arg("text");
-    if(server.hasArg("validFor")) {
-      alertExiration = millis() + server.arg("validFor").toInt();
+    if(server.hasArg("timeout")) {
+      alertTimeout = millis() + server.arg("timeout").toInt();
     } else {
-      alertExiration = 0;
+      alertTimeout = 0;
     }
     server.send(200, "text/plain", "Alert set");
   }
@@ -158,19 +197,45 @@ void handleClearAlert() {
   server.send(200, "text/plain", "Alert cleared");
 }
 
+void handleSetMessage() {
+  if(server.hasArg("index") && 
+     server.hasArg("label") && 
+     server.hasArg("text") && 
+     server.hasArg("color")) {
+    int index = strtol(server.arg("index").c_str(), NULL, 10);
+    String label = server.arg("label");
+    String text = server.arg("text");
+    unsigned long color = strtol(server.arg("color").c_str(), NULL, 16);
+    messages[index] = { label, text, matrix.Color((color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff), true };
+    server.send(200, "text/plain", "Message set");
+  }
+  server.send(400, "text/plain", "Missing arguments");
+}
+
+void handleClearMessage() {
+  if(server.hasArg("index")) {
+    int index = strtol(server.arg("index").c_str(), NULL, 10);
+    messages[index].enabled = false;
+    server.send(200, "text/plain", "Message cleared");
+  }
+  server.send(400, "text/plain", "Missing arguments");
+}
+
 class WebServerTask : public Task {
 protected:
     void loop() {
       server.handleClient();
-      delay(500);
+      delay(WEB_SERVER_DELAY);
     }
 } web_server_task;
 
 void setupWebServer() {
   server.on("/brightness", handleGetSetBrightness);
-  server.on("/speed", handleGetSetSpeed);
+  server.on("/scrollSpeed", handleGetSetSpeed);
   server.on("/setAlert", handleSetAlert);
   server.on("/clearAlert", handleClearAlert);
+  server.on("/setMessage", handleSetMessage);
+  server.on("/clearMessage", handleClearMessage);
   server.begin();   
   Scheduler.start(&web_server_task);
 }
@@ -182,33 +247,54 @@ int getTextWidth(String text) {
   return w;
 }
 
-void showAlerts() {  
-  matrix.setCursor((int)floor(animationPosition), 0);
-  matrix.setTextColor(matrix.Color(alertColor[0], alertColor[1], alertColor[2]));
-  matrix.print(alert);
-  animationPosition -= (float)deltaTime / 1000.0 * animationSpeed;
-  if (animationPosition + getTextWidth(alert) < 0) {
-    animationPosition = (float)DISPLAY_WIDTH - 1;
-  }
-  if (alertExiration > 0 && alertExiration < millis()) {
-    alert = String();
-    alertExiration = 0;
-  }
-}
-
-void showClock() {
+void displayClock() {
     matrix.setCursor(1, 0);
-    int status = timeStatus();
-    if (status == timeSet) {
-      matrix.setTextColor(matrix.Color(displayColor[0], displayColor[1], displayColor[2]));
-    } else {
-      matrix.setTextColor(matrix.Color(alertColor[0], alertColor[1], alertColor[2]));
-    }
-    sprintf(charBuffer, "%02d:%02d", hour(), minute());
+    matrix.setTextColor(displayColor);
+    const char * delim = second() % 2 ? ":" : " ";
+    sprintf(charBuffer, "%02d%s%02d", hour(), delim, minute());
     matrix.print(charBuffer);
+    matrix.show();
 }
 
-void computeTimeDelta() {
+void resetMessageMode() {
+  messageMode = false;
+  nextMessage = millis() + MESSAGE_DELAY;
+}
+
+void displayMessages() {
+  int totalLength = 0;
+  for (int i=0; i<MAX_MESSAGES; i++) {
+    if (messages[i].enabled) {
+      matrix.setCursor((int)floor(scrollPosition) + totalLength, 0);
+      matrix.setTextColor(messages[i].color);
+      String message = messages[i].label + ":" + messages[i].text;
+      matrix.print(message);
+      totalLength += getTextWidth(message) + MESSAGE_PADDING;
+    }
+  }
+  matrix.show();
+  scrollPosition -= (float)deltaTime / 1000.0 * scrollSpeed;
+  if (scrollPosition + totalLength < 0) {
+    resetMessageMode();
+  }
+}
+
+void diplayAlerts() {  
+  matrix.setCursor((int)floor(scrollPosition), 0);
+  matrix.setTextColor(alertColor);
+  matrix.print(alert);
+  matrix.show();
+  scrollPosition -= (float)deltaTime / 1000.0 * scrollSpeed;
+  if (scrollPosition + getTextWidth(alert) < 0) {
+    scrollPosition = (float)DISPLAY_WIDTH - 1;
+  }
+  if (alertTimeout > 0 && alertTimeout < millis()) {
+    alert = String();
+    alertTimeout = 0;
+  }
+}
+
+void calcTimeDelta() {
   long currentTime = millis();
   deltaTime = currentTime - startTime;
   startTime = currentTime;
@@ -217,16 +303,26 @@ void computeTimeDelta() {
 class DisplayTask : public Task {
 protected:
     void loop() {
-      computeTimeDelta();
+      calcTimeDelta();
       matrix.fillScreen(0);
       matrix.setBrightness(displayBrightness);
       if (alert.length() > 0) {
-        showAlerts();
+        diplayAlerts();
+        resetMessageMode();
+        delay(SCROLL_DELAY);
       } else {
-        showClock();
+        if (!messageMode && millis() > nextMessage) {
+          scrollPosition = DISPLAY_WIDTH;
+          messageMode = true;
+        } 
+        if (messageMode) {
+          displayMessages();
+          delay(SCROLL_DELAY);
+        } else {
+          displayClock();
+          delay(CLOCK_DELAY);
+        }
       }
-      matrix.show();
-      delay(50);
     }
 } display_task;
 
@@ -239,6 +335,7 @@ void setupDisplay() {
 
 void setup() {
   setupWifi();
+  setupRemoteDebug();
   setupOta();
   setupTime();
   setupWebServer();
