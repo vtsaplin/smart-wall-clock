@@ -11,12 +11,12 @@
 #include <Scheduler.h>
 #include <RemoteDebug.h>
 
-#define OTA_DELAY 1000
-#define WEB_SERVER_DELAY 1000
-#define REMOTE_DEBUG_DELAY 1000
+#define OTA_INTERVAL 500
+#define WEB_SERVER_INTERVAL 500
+#define REMOTE_DEBUG_INTERVAL 500
 
 #define SCROLL_DELAY 50
-#define CLOCK_DELAY 1000
+#define MESSAGE_DELAY 1000
 
 #define DISPLAY_WIDTH 32
 #define DISPLAY_HEIGHT 8 
@@ -25,9 +25,7 @@
 #define BRIGHTNESS 2
 #define SCROLL_SPEED 18.0
 
-#define MAX_MESSAGES 3
-#define MESSAGE_DELAY 10000
-#define MESSAGE_PADDING 5
+#define MAX_MESSAGES 5
 
 struct Message {
   String label;
@@ -54,13 +52,11 @@ Adafruit_NeoMatrix matrix = Adafruit_NeoMatrix(DISPLAY_WIDTH, DISPLAY_HEIGHT, LE
 uint16_t displayColor = matrix.Color(74, 171, 255);
 int displayBrightness = BRIGHTNESS;
 
-uint16_t alertColor = matrix.Color(255, 101, 74);
-
 String alert;
+uint16_t alertColor = matrix.Color(255, 101, 74);
 unsigned long alertTimeout = 0;
 
 Message messages[MAX_MESSAGES];
-unsigned long nextMessageMillis = 0;
 
 char charBuffer[256];
 
@@ -94,7 +90,7 @@ class OtaTask : public Task {
 protected:
     void loop() {
       ArduinoOTA.handle();
-      delay(OTA_DELAY);
+      delay(OTA_INTERVAL);
     }
 } ota_task;
 
@@ -148,7 +144,7 @@ class RemoteDebugTask : public Task {
 protected:
     void loop() {
       Debug.handle();
-      delay(REMOTE_DEBUG_DELAY);
+      delay(REMOTE_DEBUG_INTERVAL);
     }
 } remote_debug_task;
 
@@ -168,7 +164,8 @@ void handleGetSetBrightness() {
 void handleSetAlert() {
   debugV("setting alert");
   if(server.hasArg("text")) {
-    alert = server.arg("text");
+    debugV("alert arg=%s", server.arg("text").c_str());
+    alert = String(server.arg("text"));
     debugV("alert=%s", alert.c_str());
     if(server.hasArg("timeout")) {
       alertTimeout = millis() + server.arg("timeout").toInt();
@@ -214,7 +211,7 @@ class WebServerTask : public Task {
 protected:
     void loop() {
       server.handleClient();
-      delay(WEB_SERVER_DELAY);
+      delay(WEB_SERVER_INTERVAL);
     }
 } web_server_task;
 
@@ -251,10 +248,10 @@ protected:
       for (int i=0; i<10; i++) {
         displayClock(getMessageCount() > 0 && i == 0);
         if (alert.length() > 0) {
-          diplayAlerts();
+          displayAlerts();
         }
       }
-      if (getMessageCount() > 0 && millis() > nextMessageMillis) {
+      if (getMessageCount() > 0) {
         displayMessages();
       }
     }
@@ -264,12 +261,12 @@ private:
       matrix.setTextColor(displayColor);
       sprintf(charBuffer, "%02d:%02d", hour(), minute());
       if (animate) {
-        for (int j=DISPLAY_HEIGHT; j>=0; j--) {
+        for (int j=-DISPLAY_HEIGHT; j<=0; j++) {
           matrix.fillScreen(0);
           matrix.setCursor(1, j);
           matrix.print(charBuffer);
           matrix.show();
-          delay(50);
+          delay(SCROLL_DELAY);
         }
       } else {
           matrix.fillScreen(0);
@@ -296,35 +293,34 @@ private:
           matrix.setCursor(0, j);
           matrix.print(messages[i].label);
           matrix.show();
-          delay(50);
+          delay(SCROLL_DELAY);
         }
-        delay(1000);
+        delay(MESSAGE_DELAY);
         for (int j=DISPLAY_HEIGHT; j>=0; j--) {
           matrix.fillScreen(0);
           matrix.setCursor(0, j);
           matrix.print(messages[i].text);
           matrix.show();
-          delay(50);
+          delay(SCROLL_DELAY);
         }
-        delay(2000);
+        delay(MESSAGE_DELAY);
       }
     }
-    nextMessageMillis = millis() + MESSAGE_DELAY;
   }
 
-  void diplayAlerts() {  
+  void displayAlerts() {  
     debugV("showing alert=%s", alert.c_str());
-    int textWidth = getTextWidth(alert);
-    debugV("textWidth=%d", textWidth);
+    int alertWidth = getTextWidth(alert);
+    debugV("alertWidth=%d", alertWidth);
     while(true) {
-      for (int i=DISPLAY_WIDTH; i + textWidth < 0; i--) {
-        debugV("alert pos=%d", i);
-        matrix.setCursor(i, 0);
+      for (int i=DISPLAY_WIDTH; i + alertWidth >= 0; i--) {
         matrix.setBrightness(displayBrightness);
         matrix.setTextColor(alertColor);
+        matrix.fillScreen(0);
+        matrix.setCursor(i, 0);
         matrix.print(alert);
         matrix.show();
-        delay(50);
+        delay(SCROLL_DELAY);
       }
       if (alert.length() == 0) {
         debugV("no defined alert - exit");
