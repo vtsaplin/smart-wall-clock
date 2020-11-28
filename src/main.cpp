@@ -60,14 +60,7 @@ String alert;
 unsigned long alertTimeout = 0;
 
 Message messages[MAX_MESSAGES];
-unsigned long nextMessage = 0;
-bool messageMode = false;
-
-unsigned long startTime = -1;
-unsigned long deltaTime = 0;
-
-float scrollPosition = 0;
-float scrollSpeed = SCROLL_SPEED;
+unsigned long nextMessageMillis = 0;
 
 char charBuffer[256];
 
@@ -172,18 +165,14 @@ void handleGetSetBrightness() {
   server.send(200, "text/plain", String(displayBrightness));
 }
 
-void handleGetSetSpeed() {
-  if(server.hasArg("value")) {
-    scrollSpeed = (float)server.arg("value").toInt();
-  }
-  server.send(200, "text/plain", String(scrollSpeed));
-}
-
 void handleSetAlert() {
+  debugV("setting alert");
   if(server.hasArg("text")) {
     alert = server.arg("text");
+    debugV("alert=%s", alert.c_str());
     if(server.hasArg("timeout")) {
       alertTimeout = millis() + server.arg("timeout").toInt();
+      debugV("timeout=%d", alertTimeout);
     } else {
       alertTimeout = 0;
     }
@@ -231,7 +220,6 @@ protected:
 
 void setupWebServer() {
   server.on("/brightness", handleGetSetBrightness);
-  server.on("/scrollSpeed", handleGetSetSpeed);
   server.on("/setAlert", handleSetAlert);
   server.on("/clearAlert", handleClearAlert);
   server.on("/setMessage", handleSetMessage);
@@ -247,83 +235,109 @@ int getTextWidth(String text) {
   return w;
 }
 
-void displayClock() {
-    matrix.setCursor(1, 0);
-    matrix.setTextColor(displayColor);
-    const char * delim = second() % 2 ? ":" : " ";
-    sprintf(charBuffer, "%02d%s%02d", hour(), delim, minute());
-    matrix.print(charBuffer);
-    matrix.show();
-}
-
-void resetMessageMode() {
-  messageMode = false;
-  nextMessage = millis() + MESSAGE_DELAY;
-}
-
-void displayMessages() {
-  int totalLength = 0;
+bool getMessageCount() {
+  int count = 0;
   for (int i=0; i<MAX_MESSAGES; i++) {
     if (messages[i].enabled) {
-      matrix.setCursor((int)floor(scrollPosition) + totalLength, 0);
-      matrix.setTextColor(messages[i].color);
-      String message = messages[i].label + ":" + messages[i].text;
-      matrix.print(message);
-      totalLength += getTextWidth(message) + MESSAGE_PADDING;
+      count++;
     }
   }
-  matrix.show();
-  scrollPosition -= (float)deltaTime / 1000.0 * scrollSpeed;
-  if (scrollPosition + totalLength < 0) {
-    resetMessageMode();
-  }
-}
-
-void diplayAlerts() {  
-  matrix.setCursor((int)floor(scrollPosition), 0);
-  matrix.setTextColor(alertColor);
-  matrix.print(alert);
-  matrix.show();
-  scrollPosition -= (float)deltaTime / 1000.0 * scrollSpeed;
-  if (scrollPosition + getTextWidth(alert) < 0) {
-    scrollPosition = (float)DISPLAY_WIDTH - 1;
-  }
-  if (alertTimeout > 0 && alertTimeout < millis()) {
-    alert = String();
-    alertTimeout = 0;
-  }
-}
-
-void calcTimeDelta() {
-  long currentTime = millis();
-  deltaTime = currentTime - startTime;
-  startTime = currentTime;
+  return count;
 }
 
 class DisplayTask : public Task {
 protected:
     void loop() {
-      calcTimeDelta();
-      matrix.fillScreen(0);
-      matrix.setBrightness(displayBrightness);
-      if (alert.length() > 0) {
-        diplayAlerts();
-        resetMessageMode();
-        delay(SCROLL_DELAY);
-      } else {
-        if (!messageMode && millis() > nextMessage) {
-          scrollPosition = DISPLAY_WIDTH;
-          messageMode = true;
-        } 
-        if (messageMode) {
-          displayMessages();
-          delay(SCROLL_DELAY);
-        } else {
-          displayClock();
-          delay(CLOCK_DELAY);
+      for (int i=0; i<10; i++) {
+        displayClock(getMessageCount() > 0 && i == 0);
+        if (alert.length() > 0) {
+          diplayAlerts();
         }
       }
+      if (getMessageCount() > 0 && millis() > nextMessageMillis) {
+        displayMessages();
+      }
     }
+private:
+  void displayClock(bool animate) {
+      matrix.setBrightness(displayBrightness);
+      matrix.setTextColor(displayColor);
+      sprintf(charBuffer, "%02d:%02d", hour(), minute());
+      if (animate) {
+        for (int j=DISPLAY_HEIGHT; j>=0; j--) {
+          matrix.fillScreen(0);
+          matrix.setCursor(1, j);
+          matrix.print(charBuffer);
+          matrix.show();
+          delay(50);
+        }
+      } else {
+          matrix.fillScreen(0);
+          matrix.setCursor(1, 0);
+          matrix.print(charBuffer);
+          matrix.show();
+          delay(500);
+      }
+      matrix.fillScreen(0);
+      matrix.setCursor(1, 0);
+      sprintf(charBuffer, "%02d %02d", hour(), minute());
+      matrix.print(charBuffer);
+      matrix.show();
+      delay(500);
+  }
+
+  void displayMessages() {
+    for (int i=0; i<MAX_MESSAGES; i++) {
+      if (messages[i].enabled) {
+        matrix.setTextColor(messages[i].color);
+        matrix.setBrightness(displayBrightness);
+        for (int j=DISPLAY_HEIGHT; j>=0; j--) {
+          matrix.fillScreen(0);
+          matrix.setCursor(0, j);
+          matrix.print(messages[i].label);
+          matrix.show();
+          delay(50);
+        }
+        delay(1000);
+        for (int j=DISPLAY_HEIGHT; j>=0; j--) {
+          matrix.fillScreen(0);
+          matrix.setCursor(0, j);
+          matrix.print(messages[i].text);
+          matrix.show();
+          delay(50);
+        }
+        delay(2000);
+      }
+    }
+    nextMessageMillis = millis() + MESSAGE_DELAY;
+  }
+
+  void diplayAlerts() {  
+    debugV("showing alert=%s", alert.c_str());
+    int textWidth = getTextWidth(alert);
+    debugV("textWidth=%d", textWidth);
+    while(true) {
+      for (int i=DISPLAY_WIDTH; i + textWidth < 0; i--) {
+        debugV("alert pos=%d", i);
+        matrix.setCursor(i, 0);
+        matrix.setBrightness(displayBrightness);
+        matrix.setTextColor(alertColor);
+        matrix.print(alert);
+        matrix.show();
+        delay(50);
+      }
+      if (alert.length() == 0) {
+        debugV("no defined alert - exit");
+        return;
+      }
+      if (alertTimeout > 0 && alertTimeout < millis()) {
+        alert = String();
+        alertTimeout = 0;
+        debugV("alert expired - exit");
+        return;
+      }
+    }
+  }
 } display_task;
 
 void setupDisplay() {
