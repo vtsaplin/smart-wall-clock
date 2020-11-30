@@ -192,6 +192,7 @@ void handleSetMessage() {
     String label = server.arg("label");
     String text = server.arg("text");
     unsigned long color = strtol(server.arg("color").c_str(), NULL, 16);
+    debugV("setting message at %d: %s, %s", index, label.c_str(), text.c_str());
     messages[index] = { label, text, matrix.Color((color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff), true };
     server.send(200, "text/plain", "Message set");
   }
@@ -245,8 +246,9 @@ bool getMessageCount() {
 class DisplayTask : public Task {
 protected:
     void loop() {
-      for (int i=0; i<10; i++) {
-        displayClock(getMessageCount() > 0 && i == 0);
+      for (int i=0; i<7; i++) {
+        bool animate = getMessageCount() > 0 && i == 0;
+        displayClock(animate);
         if (alert.length() > 0) {
           displayAlerts();
         }
@@ -290,7 +292,7 @@ private:
         matrix.setBrightness(displayBrightness);
         for (int j=DISPLAY_HEIGHT; j>=0; j--) {
           matrix.fillScreen(0);
-          matrix.setCursor(0, j);
+          matrix.setCursor(1, j);
           matrix.print(messages[i].label);
           matrix.show();
           delay(SCROLL_DELAY);
@@ -298,7 +300,7 @@ private:
         delay(MESSAGE_DELAY);
         for (int j=DISPLAY_HEIGHT; j>=0; j--) {
           matrix.fillScreen(0);
-          matrix.setCursor(0, j);
+          matrix.setCursor(1, j);
           matrix.print(messages[i].text);
           matrix.show();
           delay(SCROLL_DELAY);
@@ -313,7 +315,17 @@ private:
     int alertWidth = getTextWidth(alert);
     debugV("alertWidth=%d", alertWidth);
     while(true) {
+      if (alertTimeout > 0 && alertTimeout < millis()) {
+        alert = String();
+        alertTimeout = 0;
+        debugV("alert expired - exit");
+        return;
+      }
       for (int i=DISPLAY_WIDTH; i + alertWidth >= 0; i--) {
+        if (alert.length() == 0) {
+          debugV("no defined alert - exit");
+          return;
+        }
         matrix.setBrightness(displayBrightness);
         matrix.setTextColor(alertColor);
         matrix.fillScreen(0);
@@ -321,16 +333,6 @@ private:
         matrix.print(alert);
         matrix.show();
         delay(SCROLL_DELAY);
-      }
-      if (alert.length() == 0) {
-        debugV("no defined alert - exit");
-        return;
-      }
-      if (alertTimeout > 0 && alertTimeout < millis()) {
-        alert = String();
-        alertTimeout = 0;
-        debugV("alert expired - exit");
-        return;
       }
     }
   }
