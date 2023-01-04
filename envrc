@@ -1,0 +1,4 @@
+export WIFI_SSID=op://Development/SmartWallClock/WIFI_SSID
+export WIFI_PASS=op://Development/SmartWallClock/WIFI_PASS
+export OTA_HOSTNAME=op://Development/SmartWallClock/OTA_HOSTNAME
+export OTA_PASS=op://Development/SmartWallClock/OTA_PASS

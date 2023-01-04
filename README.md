@@ -2,13 +2,22 @@
 
 ## Building and deploying
 
-To build and deploy the project you would need to define the following system variables:
-- WIFI_SSID - WIFI access point name
-- WIFI_PASS - WIFI password
-- OTA_HOSTNAME - MDNS hostname for OTA
-- OTA_PASS - OTA password
+Install CLI tools:
+```bash
+brew install direnv
+brew install --cask 1password/tap/1password-cli
+bre install platformio
+```
 
-## Uploading
-`pio run -t upload -e ota`
+Set up the project:
+```bash
+cd ./<project_folder>
+direnv allow .
+op inject -i envrc -o .envrc 
+```
 
-`pio run -t upload -e local`
+Deploy:
+```bash
+pio run -t upload -e ota # OTA
+pio run -t upload -e local # Local
+```
