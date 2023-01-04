@@ -3,6 +3,7 @@
 #include <ESP8266WebServer.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
+#include <Timezone.h>
 #include <ArduinoOTA.h>
 #include <Adafruit_NeoPixel.h>
 #include <Adafruit_NeoMatrix.h>
@@ -19,7 +20,7 @@
 #define MESSAGE_DELAY 1000
 
 #define DISPLAY_WIDTH 32
-#define DISPLAY_HEIGHT 8 
+#define DISPLAY_HEIGHT 8
 #define LED_PIN 2
 
 #define BRIGHTNESS 2
@@ -37,8 +38,13 @@ struct Message {
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASS;
 
+// Central European Time (Frankfurt, Paris)
+TimeChangeRule CEST = {"CEST", Last, Sun, Mar, 2, 120}; // Central European Summer Time
+TimeChangeRule CET = {"CET ", Last, Sun, Oct, 3, 60}; // Central European Standard Time
+Timezone CE(CEST, CET);
+
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", 3600);
+NTPClient timeClient(ntpUDP);
 
 RemoteDebug Debug;
 
@@ -62,7 +68,7 @@ char charBuffer[256];
 
 time_t getNtpTime() {
   timeClient.update();
-  return timeClient.getEpochTime();
+  return CE.toLocal(timeClient.getEpochTime());
 }
 
 void setupTime() {
@@ -94,7 +100,7 @@ protected:
     }
 } ota_task;
 
-void setupOta() {  
+void setupOta() {
   ArduinoOTA.setPort(8266);
   ArduinoOTA.setHostname(OTA_HOSTNAME);
   ArduinoOTA.setPassword(OTA_PASS);
@@ -148,7 +154,7 @@ protected:
     }
 } remote_debug_task;
 
-void setupRemoteDebug() {  
+void setupRemoteDebug() {
   Debug.begin(OTA_HOSTNAME);
   Debug.setResetCmdEnabled(true);
   Scheduler.start(&remote_debug_task);
@@ -184,9 +190,9 @@ void handleClearAlert() {
 }
 
 void handleSetMessage() {
-  if(server.hasArg("index") && 
-     server.hasArg("label") && 
-     server.hasArg("text") && 
+  if(server.hasArg("index") &&
+     server.hasArg("label") &&
+     server.hasArg("text") &&
      server.hasArg("color")) {
     int index = strtol(server.arg("index").c_str(), NULL, 10);
     String label = server.arg("label");
@@ -222,7 +228,7 @@ void setupWebServer() {
   server.on("/clearAlert", handleClearAlert);
   server.on("/setMessage", handleSetMessage);
   server.on("/clearMessage", handleClearMessage);
-  server.begin();   
+  server.begin();
   Scheduler.start(&web_server_task);
 }
 
@@ -310,7 +316,7 @@ private:
     }
   }
 
-  void displayAlerts() {  
+  void displayAlerts() {
     debugV("showing alert=%s", alert.c_str());
     int alertWidth = getTextWidth(alert);
     debugV("alertWidth=%d", alertWidth);
